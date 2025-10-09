@@ -2,4 +2,6 @@
 .DS_Store
 **/.DS_Store
 ctx
+node_modules/
+
 ctx.exe
