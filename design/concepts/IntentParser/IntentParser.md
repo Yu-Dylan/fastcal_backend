@@ -1,0 +1,103 @@
+<concept_spec>
+concept IntentParser [User]
+
+purpose
+    convert natural language scheduling messages into structured calendar event data,
+    with AI assistance to handle ambiguous, casual, and incomplete scheduling language
+
+principle
+    after parsing a natural language utterance (e.g., "let's meet next Tuesday at 3 in 32-123"),
+    an LLM analyzes the text with contextual information (current date, timezone, user preferences)
+    to extract structured event information (title, date/time, location, participants);
+    the system provides multiple interpretations when ambiguous, with confidence scores;
+    the parser never writes directly to calendars, only produces structured data;
+    users can fall back to manual parsing if AI fails or confidence is too low
+
+operational principle
+    after user provides utterance and context,
+    the LLM extracts event details considering natural language patterns, relative dates,
+    implicit information, and common scheduling conventions;
+    if confidence is high (≥ 0.8), a single draft is presented;
+    if confidence is medium (0.5-0.8), multiple alternatives are provided;
+    if confidence is low (< 0.5), the system requests clarification or falls back to manual parsing;
+    user confirms the selected interpretation before any calendar commitment
+
+state
+    a set of ParsedEvent with
+        a user User
+        an utterance String // original natural language input
+        a draftEvent DraftEvent // primary structured event data
+        alternatives List<DraftEvent> // alternative interpretations
+        a confidence Float // confidence score 0.0-1.0
+        a context Map<String,Any> // current date, timezone, user calendar, preferences
+        a parsingMethod Enum<AI, Manual> // how this was parsed
+
+    where DraftEvent has
+        a title String
+        a startTime DateTime
+        an endTime DateTime
+        participants Set<Person>
+        a location String // physical location or virtual link
+        tags Set<Tag> // event type: meeting, class, appointment, etc.
+        a confidence Float // confidence for this specific interpretation
+
+    invariants
+        confidence is between 0.0 and 1.0
+        draftEvent.endTime is after draftEvent.startTime
+        every ParsedEvent belongs to exactly one user
+        alternatives are sorted by confidence (highest first)
+        if parsingMethod is AI, confidence reflects LLM certainty
+
+actions    
+    parseWithAI(user: User, utterance: String, context: Map<String,Any>): ParsedEvent
+        requires utterance is non-empty, context includes currentDate and timezone
+        effect uses LLM to analyze utterance and extract structured event data
+        note returns ParsedEvent with AI-generated draft, alternatives, and confidence
+        note if LLM fails or returns invalid data, throws error for fallback to manual parsing
+
+    parseManually(user: User, utterance: String, context: Map<String,Any>): ParsedEvent
+        requires utterance is non-empty
+        effect uses rule-based parsing to extract structured event data
+        note fallback method when AI parsing fails or user prefers manual control
+        note may require additional user input for ambiguous cases
+
+    accept(user: User, parsed: ParsedEvent, selectedDraft: DraftEvent): DraftEvent
+        requires parsed exists for user
+        effect confirms the selected draft event for further processing
+        note removes the ParsedEvent from state and returns the confirmed draft
+
+    reject(user: User, parsed: ParsedEvent)
+        requires parsed exists for user
+        effect removes the ParsedEvent without creating an event
+
+    getAlternatives(user: User, parsed: ParsedEvent): List<DraftEvent>
+        requires parsed exists for user
+        effect returns alternative interpretations sorted by confidence
+
+    refineWithAI(user: User, parsed: ParsedEvent, userFeedback: String): ParsedEvent
+        requires parsed exists for user, userFeedback is non-empty
+        effect uses LLM to refine the draft based on user feedback
+        note allows iterative refinement: "actually make it 30 minutes longer"
+
+notes
+    AI augmentation handles:
+    - Relative dates: "next Tuesday", "tomorrow at 3", "in two weeks"
+    - Implicit information: "lunch with Sarah" (1 hour duration, 12-1pm timeframe)
+    - Casual language: "coffee chat", "quick sync"
+    - Location inference: "32-123" (MIT building), "Zoom" (virtual meeting)
+    - Participant extraction: "with Sarah and John"
+    - Event type classification: "office hours", "lecture", "1:1"
+    
+    Manual parsing is preserved as fallback for:
+    - LLM failures or low confidence
+    - User preference for explicit control
+    - Privacy-sensitive scheduling
+    - Offline operation
+    
+    Validators check LLM output for:
+    - Valid date/time formats and logical ordering
+    - Non-hallucinated participants or locations
+    - Reasonable event durations (not 24+ hours for a "meeting")
+    - Proper timezone handling
+    
+</concept_spec>
