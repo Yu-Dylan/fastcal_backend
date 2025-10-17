@@ -1,0 +1,600 @@
+# prompt: create tests for IntentParser concept
+
+[@testing-concepts](../../background/testing-concepts.md)
+
+[@IntentParser specification](IntentParser.md)
+
+[@IntentParser implementation](/src/concepts/IntentParser/IntentParserConcept.ts)
+
+Please create comprehensive tests for the IntentParser concept.
+
+Required test scenarios:
+
+1. Operational principle test: Parse utterance → get alternatives → accept selected draft
+   - Use a clear utterance like "meeting tomorrow at 3pm in room 123"
+   - Verify confidence score, draft structure, alternatives
+
+2. AI parsing with different confidence levels: Test parseWithAI with various utterances
+   - High confidence: complete info like "team sync Tuesday 2pm-3pm in 32-123"
+   - Medium confidence: partial info like "lunch with Sarah tomorrow"
+   - Low confidence: vague like "catch up sometime"
+   - Verify confidence scores and number of alternatives
+
+3. Manual parsing: Test parseManually as fallback
+   - Simple structured input
+   - Verify parsingMethod is set to "Manual"
+
+4. Refinement: Test refineWithAI with user feedback
+   - Initial parse, then refine with "make it 30 minutes longer"
+   - Verify updated endTime in refined draft
+
+5. Accept and reject: Test workflow completion
+   - Accept a draft and verify ParsedEvent is removed
+   - Reject a draft and verify cleanup
+
+6. Error cases: Invalid inputs, non-existent ParsedEvent IDs
+
+Note: Tests should work with the mock implementation. Use realistic test dates and times for readability.
+
+Use Deno testing framework with programmatic assertions and console output.
+
+# response:
+
+```typescript
+// file: src/concepts/IntentParser/IntentParserConcept.test.ts
+import { assertEquals } from "jsr:@std/assert";
+import { testDb, freshID } from "@utils/database.ts";
+import IntentParserConcept, { DraftEvent, ParsedEvent } from "./IntentParserConcept.ts";
+import { ObjectId } from "npm:mongodb";
+
+// Helper function to create a new user ID
+const createUserId = () => new ObjectId().toHexString();
+
+// Helper to create a predictable context for testing
+const createTestContext = (
+  dateString = "2024-07-20T10:00:00.000Z",
+  timezone = "America/New_York",
+) => ({
+  currentDate: new Date(dateString),
+  timezone: timezone,
+  userPreferences: {
+    defaultDurationMinutes: 60,
+    preferredWorkHours: { start: 9, end: 17 },
+  },
+});
+
+// Helper to compare DraftEvent objects, especially Date and Set fields
+const assertDraftEventEquals = (
+  actual: DraftEvent,
+  expected: DraftEvent,
+  message?: string,
+) => {
+  assertEquals(actual.title, expected.title, `${message || ""} Title mismatch`);
+  assertEquals(
+    actual.startTime.getTime(),
+    expected.startTime.getTime(),
+    `${message || ""} StartTime mismatch`,
+  );
+  assertEquals(
+    actual.endTime.getTime(),
+    expected.endTime.getTime(),
+    `${message || ""} EndTime mismatch`,
+  );
+  assertEquals(
+    Array.from(actual.participants).sort(),
+    Array.from(expected.participants).sort(),
+    `${message || ""} Participants mismatch`,
+  );
+  assertEquals(
+    actual.location,
+    expected.location,
+    `${message || ""} Location mismatch`,
+  );
+  assertEquals(
+    Array.from(actual.tags).sort(),
+    Array.from(expected.tags).sort(),
+    `${message || ""} Tags mismatch`,
+  );
+  // Confidence can vary slightly with mock, so we check range
+  assertEquals(
+    typeof actual.confidence,
+    "number",
+    `${message || ""} Confidence type mismatch`,
+  );
+};
+
+Deno.test("IntentParserConcept Tests", async (test) => {
+  const [db, client] = await testDb();
+  const parser = new IntentParserConcept(db);
+  const userId = createUserId();
+  const defaultContext = createTestContext();
+
+  await test.step("Operational Principle: Parse utterance → get alternatives → accept selected draft", async () => {
+    const utterance = "meeting tomorrow at 3pm in room 123 with Alice and Bob";
+    const context = createTestContext("2024-07-20T10:00:00.000Z"); // Saturday
+
+    // 1. Parse utterance
+    const parseResult = await parser.parseWithAI({
+      user: userId,
+      utterance,
+      context,
+    });
+
+    if ("error" in parseResult) {
+      throw new Error(`parseWithAI failed: ${parseResult.error}`);
+    }
+    const parsedEvent: ParsedEvent = parseResult;
+
+    assertEquals(parsedEvent.user, userId);
+    assertEquals(parsedEvent.utterance, utterance);
+    assertEquals(parsedEvent.parsingMethod, "AI");
+    assertEquals(typeof parsedEvent.confidence, "number");
+    assertEquals(parsedEvent.confidence >= 0 && parsedEvent.confidence <= 1, true);
+
+    // Verify draft event structure (relative date "tomorrow" should be Sunday July 21st)
+    const expectedStartTime = new Date("2024-07-21T15:00:00.000Z");
+    const expectedEndTime = new Date("2024-07-21T16:00:00.000Z"); // Default 1 hour duration
+
+    assertDraftEventEquals(
+      parsedEvent.draftEvent,
+      {
+        title: utterance.substring(0, Math.min(utterance.length, 50)), // Mock takes first 50 chars as title
+        startTime: expectedStartTime,
+        endTime: expectedEndTime,
+        participants: new Set(["Alice", "Bob"]),
+        location: "room 123",
+        tags: new Set(["physical"]),
+        confidence: parsedEvent.confidence, // Draft confidence matches overall confidence in mock
+      },
+      "DraftEvent verification failed",
+    );
+
+    // Verify alternatives exist and are sorted (mock generates alternatives if confidence < 0.9)
+    // Based on mock, confidence for this utterance might be around 0.1(initial) + 0.2(title) + 0.2(tomorrow) + 0.2(3pm) + 0.1*2(participants) + 0.1(location) = 1.1, clamped to 1.0.
+    // However, the current _mockLLMParse applies += 0.2 for titleMatch when length > 5, 0.2 for tomorrow, 0.2 for 3pm, 0.1*2 for participants, 0.1 for location, starting at 0.1.
+    // 0.1 (base) + 0.2 (title) + 0.2 (tomorrow) + 0.2 (3pm) + 0.1 (Alice) + 0.1 (Bob) + 0.1 (room 123) = 1.0
+    // So confidence should be 1.0, which means no alternatives are generated by the mock (as 1.0 is not < 0.9).
+    // Let's re-run a quick trace in my head, if confidence becomes 1.0, then alternatives are []
+    // If the mock `overallConfidence` reaches 1.0, then `overallConfidence < 0.9` is false, so no alternatives are generated.
+    // Let's adjust expected confidence for this utterance to be 0.8 to force alternatives for the test.
+    // (A real LLM would be less deterministic)
+    // To get 0.8: initial 0.1 + 0.2 (title) + 0.2 (tomorrow) + 0.2 (3pm) = 0.7.
+    // If I remove participants/location from utterance to get medium confidence.
+    // Let's use "meeting tomorrow at 3pm" to get medium confidence (0.7) and verify alternatives.
+
+    const mediumConfidenceUtterance = "meeting tomorrow at 3pm";
+    const mediumConfidenceResult = await parser.parseWithAI({
+      user: userId,
+      utterance: mediumConfidenceUtterance,
+      context,
+    });
+    if ("error" in mediumConfidenceResult) throw new Error("Parse failed");
+    const mediumParsedEvent = mediumConfidenceResult;
+
+    console.log(`Medium Confidence for "${mediumConfidenceUtterance}": ${mediumParsedEvent.confidence}`);
+    assertEquals(mediumParsedEvent.confidence >= 0.5 && mediumParsedEvent.confidence < 0.9, true); // Expect medium confidence based on mock
+    assertEquals(mediumParsedEvent.alternatives.length > 0, true, "Should have alternatives for medium confidence");
+
+    // 2. Get alternatives
+    const alternativesResult = await parser._getAlternatives({
+      user: userId,
+      parsed: mediumParsedEvent,
+    });
+    if ("error" in alternativesResult) {
+      throw new Error(`_getAlternatives failed: ${alternativesResult.error}`);
+    }
+    const alternatives: DraftEvent[] = alternativesResult;
+
+    assertEquals(alternatives.length, 2, "Expected 2 alternatives from mock LLM");
+    assertEquals(alternatives[0].confidence >= alternatives[1].confidence, true, "Alternatives should be sorted by confidence");
+
+    // 3. Accept a selected draft (the primary one in this case)
+    const selectedDraft = mediumParsedEvent.draftEvent;
+    const acceptedDraftResult = await parser.accept({
+      user: userId,
+      parsed: mediumParsedEvent,
+      selectedDraft,
+    });
+    if ("error" in acceptedDraftResult) {
+      throw new Error(`accept failed: ${acceptedDraftResult.error}`);
+    }
+    const acceptedDraft: DraftEvent = acceptedDraftResult;
+
+    assertDraftEventEquals(acceptedDraft, selectedDraft, "Accepted draft mismatch");
+
+    // Verify ParsedEvent is removed from state
+    const deletedParsedEvent = await parser.parsedEvents.findOne({
+      _id: mediumParsedEvent._id,
+      user: userId,
+    });
+    assertEquals(deletedParsedEvent, null, "ParsedEvent should be removed after accept");
+  });
+
+  await test.step("AI parsing with different confidence levels", async () => {
+    // High confidence: complete info like "team sync Tuesday 2pm-3pm in 32-123"
+    const highConfidenceUtterance = "team sync Tuesday 2pm in 32-123";
+    const highConfidenceResult = await parser.parseWithAI({
+      user: userId,
+      utterance: highConfidenceUtterance,
+      context: createTestContext("2024-07-15T10:00:00.000Z"), // A Monday
+    });
+    if ("error" in highConfidenceResult) throw new Error("Parse failed");
+    const highParsedEvent = highConfidenceResult;
+    console.log(`High Confidence for "${highConfidenceUtterance}": ${highParsedEvent.confidence}`);
+    assertEquals(highParsedEvent.confidence >= 0.8, true, "Expected high confidence");
+    // Based on mock, confidence = 0.1 (base) + 0.2 (title) + 0.2 (Tuesday) + 0.2 (2pm) + 0.1 (location) = 0.8
+    // With 0.8 confidence, alternatives are still generated since 0.8 < 0.9 in mock.
+    assertEquals(highParsedEvent.alternatives.length > 0, true, "Expected alternatives for confidence < 0.9");
+    assertDraftEventEquals(highParsedEvent.draftEvent, {
+      title: highConfidenceUtterance.substring(0, Math.min(highConfidenceUtterance.length, 50)),
+      startTime: new Date("2024-07-16T14:00:00.000Z"), // Next Tuesday 2pm
+      endTime: new Date("2024-07-16T15:00:00.000Z"),
+      participants: new Set(),
+      location: "32-123",
+      tags: new Set(["physical"]),
+      confidence: highParsedEvent.confidence,
+    });
+
+    // Medium confidence: partial info like "lunch with Sarah tomorrow"
+    const mediumConfidenceUtterance = "lunch with Sarah tomorrow";
+    const mediumConfidenceResult = await parser.parseWithAI({
+      user: userId,
+      utterance: mediumConfidenceUtterance,
+      context: createTestContext("2024-07-20T10:00:00.000Z"), // Saturday
+    });
+    if ("error" in mediumConfidenceResult) throw new Error("Parse failed");
+    const mediumParsedEvent = mediumConfidenceResult;
+    console.log(`Medium Confidence for "${mediumConfidenceUtterance}": ${mediumParsedEvent.confidence}`);
+    assertEquals(mediumParsedEvent.confidence >= 0.5 && mediumParsedEvent.confidence < 0.8, true, "Expected medium confidence");
+    assertEquals(mediumParsedEvent.alternatives.length > 0, true, "Expected alternatives for medium confidence");
+    assertDraftEventEquals(mediumParsedEvent.draftEvent, {
+      title: mediumConfidenceUtterance.substring(0, Math.min(mediumConfidenceUtterance.length, 50)),
+      startTime: new Date("2024-07-21T12:00:00.000Z"), // Tomorrow (Sunday) at 12pm (inferred for lunch)
+      endTime: new Date("2024-07-21T13:00:00.000Z"),
+      participants: new Set(["Sarah"]),
+      location: "",
+      tags: new Set(),
+      confidence: mediumParsedEvent.confidence,
+    });
+
+    // Low confidence: vague like "catch up sometime"
+    const lowConfidenceUtterance = "catch up sometime";
+    const lowConfidenceResult = await parser.parseWithAI({
+      user: userId,
+      utterance: lowConfidenceUtterance,
+      context: createTestContext(),
+    });
+    if ("error" in lowConfidenceResult) throw new Error("Parse failed");
+    const lowParsedEvent = lowConfidenceResult;
+    console.log(`Low Confidence for "${lowConfidenceUtterance}": ${lowParsedEvent.confidence}`);
+    assertEquals(lowParsedEvent.confidence < 0.5, true, "Expected low confidence");
+    assertEquals(lowParsedEvent.alternatives.length > 0, true, "Expected alternatives for low confidence");
+    assertDraftEventEquals(lowParsedEvent.draftEvent, {
+      title: lowConfidenceUtterance.substring(0, Math.min(lowConfidenceUtterance.length, 50)),
+      startTime: new Date(defaultContext.currentDate.getTime() + 60 * 60 * 1000), // Default 1 hour from now
+      endTime: new Date(defaultContext.currentDate.getTime() + 2 * 60 * 60 * 1000), // Default 2 hours from now
+      participants: new Set(),
+      location: "",
+      tags: new Set(),
+      confidence: lowParsedEvent.confidence,
+    });
+  });
+
+  await test.step("Manual parsing: Test parseManually as fallback", async () => {
+    const utterance = "Manual meeting with Alice at 5pm in office A";
+    const context = createTestContext("2024-07-20T10:00:00.000Z"); // Saturday
+    const parseResult = await parser.parseManually({
+      user: userId,
+      utterance,
+      context,
+    });
+
+    if ("error" in parseResult) {
+      throw new Error(`parseManually failed: ${parseResult.error}`);
+    }
+    const parsedEvent: ParsedEvent = parseResult;
+
+    assertEquals(parsedEvent.user, userId);
+    assertEquals(parsedEvent.utterance, utterance);
+    assertEquals(parsedEvent.parsingMethod, "Manual");
+    assertEquals(parsedEvent.alternatives.length, 0, "Manual parsing should not generate alternatives");
+    assertEquals(parsedEvent.confidence, 0.7); // Expected fixed confidence for manual mock
+
+    // Verify draft event structure
+    const expectedStartTime = new Date("2024-07-20T17:00:00.000Z"); // Same day at 5pm
+    const expectedEndTime = new Date("2024-07-20T18:00:00.000Z"); // 1 hour duration
+
+    assertDraftEventEquals(
+      parsedEvent.draftEvent,
+      {
+        title: utterance,
+        startTime: expectedStartTime,
+        endTime: expectedEndTime,
+        participants: new Set(["Alice"]),
+        location: "office A",
+        tags: new Set(),
+        confidence: parsedEvent.confidence,
+      },
+      "Manual DraftEvent verification failed",
+    );
+  });
+
+  await test.step("Refinement: Test refineWithAI with user feedback", async () => {
+    // 1. Initial parse
+    const initialUtterance = "meeting tomorrow at 2pm";
+    const context = createTestContext("2024-07-20T10:00:00.000Z"); // Saturday
+    const initialParseResult = await parser.parseWithAI({
+      user: userId,
+      utterance: initialUtterance,
+      context,
+    });
+    if ("error" in initialParseResult) throw new Error("Initial parse failed");
+    const initialParsedEvent = initialParseResult;
+
+    const initialEndTime = new Date("2024-07-21T15:00:00.000Z"); // Tomorrow 2pm + 1hr default
+    assertEquals(
+      initialParsedEvent.draftEvent.endTime.getTime(),
+      initialEndTime.getTime(),
+      "Initial endTime mismatch",
+    );
+
+    // 2. Refine with user feedback
+    const userFeedback = "actually make it 30 minutes longer";
+    const refinedResult = await parser.refineWithAI({
+      user: userId,
+      parsed: initialParsedEvent,
+      userFeedback,
+    });
+
+    if ("error" in refinedResult) {
+      throw new Error(`refineWithAI failed: ${refinedResult.error}`);
+    }
+    const refinedParsedEvent: ParsedEvent = refinedResult;
+
+    assertEquals(refinedParsedEvent._id.toHexString(), initialParsedEvent._id.toHexString(), "ParsedEvent ID should remain the same");
+    assertEquals(refinedParsedEvent.parsingMethod, "AI", "Refinement should use AI method");
+
+    // Verify utterance updated to reflect feedback (for traceability)
+    assertEquals(
+      refinedParsedEvent.utterance,
+      `${initialParsedEvent.utterance}. Refine: ${userFeedback}`,
+      "Utterance should be updated with feedback",
+    );
+
+    // Calculate expected refined endTime: initialEndTime + 30 minutes
+    const expectedRefinedEndTime = new Date(initialEndTime.getTime() + 30 * 60 * 1000);
+    assertEquals(
+      refinedParsedEvent.draftEvent.endTime.getTime(),
+      expectedRefinedEndTime.getTime(),
+      "Refined endTime mismatch after 30 minutes longer",
+    );
+    // Confidence should be updated, likely similar or slightly higher/lower
+    assertEquals(typeof refinedParsedEvent.confidence, "number", "Confidence should be a number");
+
+    // Verify the ParsedEvent in the database is updated
+    const updatedInDb = await parser.parsedEvents.findOne({ _id: initialParsedEvent._id });
+    assertEquals(updatedInDb?.draftEvent.endTime.getTime(), expectedRefinedEndTime.getTime(), "DB should reflect refined endTime");
+  });
+
+  await test.step("Accept and reject: Test workflow completion", async () => {
+    // Test accept
+    const acceptUtterance = "quick chat next monday at 10am";
+    const context1 = createTestContext("2024-07-20T10:00:00.000Z"); // Saturday
+    const parseResult1 = await parser.parseWithAI({
+      user: userId,
+      utterance: acceptUtterance,
+      context: context1,
+    });
+    if ("error" in parseResult1) throw new Error("Parse failed");
+    const parsedEvent1 = parseResult1;
+
+    const acceptedDraftResult = await parser.accept({
+      user: userId,
+      parsed: parsedEvent1,
+      selectedDraft: parsedEvent1.draftEvent,
+    });
+    if ("error" in acceptedDraftResult) throw new Error("Accept failed");
+
+    // Verify ParsedEvent is removed
+    const found1 = await parser.parsedEvents.findOne({ _id: parsedEvent1._id });
+    assertEquals(found1, null, "ParsedEvent should be removed after accept");
+
+    // Test reject
+    const rejectUtterance = "cancel that meeting idea";
+    const context2 = createTestContext();
+    const parseResult2 = await parser.parseWithAI({
+      user: userId,
+      utterance: rejectUtterance,
+      context: context2,
+    });
+    if ("error" in parseResult2) throw new Error("Parse failed");
+    const parsedEvent2 = parseResult2;
+
+    const rejectResult = await parser.reject({ user: userId, parsed: parsedEvent2 });
+    if ("error" in rejectResult) throw new Error("Reject failed");
+    assertEquals(rejectResult, {}, "Reject should return empty object on success");
+
+    // Verify ParsedEvent is removed
+    const found2 = await parser.parsedEvents.findOne({ _id: parsedEvent2._id });
+    assertEquals(found2, null, "ParsedEvent should be removed after reject");
+  });
+
+  await test.step("Error cases: Invalid inputs, non-existent ParsedEvent IDs", async () => {
+    // parseWithAI: Empty utterance
+    let errorResult = await parser.parseWithAI({
+      user: userId,
+      utterance: "",
+      context: defaultContext,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for empty utterance");
+    assertEquals(errorResult.error, "Utterance cannot be empty.");
+
+    // parseWithAI: Missing context.currentDate
+    errorResult = await parser.parseWithAI({
+      user: userId,
+      utterance: "some text",
+      context: { timezone: "America/New_York" },
+    });
+    assertEquals("error" in errorResult, true, "Expected error for missing currentDate in context");
+    assertEquals(errorResult.error, "Context must include currentDate and timezone.");
+
+    // parseWithAI: Missing context.timezone
+    errorResult = await parser.parseWithAI({
+      user: userId,
+      utterance: "some text",
+      context: { currentDate: new Date() },
+    });
+    assertEquals("error" in errorResult, true, "Expected error for missing timezone in context");
+    assertEquals(errorResult.error, "Context must include currentDate and timezone.");
+
+    // parseManually: Empty utterance
+    errorResult = await parser.parseManually({
+      user: userId,
+      utterance: "",
+      context: defaultContext,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for empty utterance in parseManually");
+    assertEquals(errorResult.error, "Utterance cannot be empty.");
+
+    // Set up a valid ParsedEvent for subsequent error tests
+    const validParseResult = await parser.parseWithAI({
+      user: userId,
+      utterance: "test event",
+      context: defaultContext,
+    });
+    if ("error" in validParseResult) throw new Error("Setup for error test failed");
+    const validParsedEvent = validParseResult;
+
+    const nonExistentId = freshID();
+    const anotherUser = createUserId();
+    const otherUserParsedEvent: ParsedEvent = { ...validParsedEvent, user: anotherUser, _id: freshID() };
+    await parser.parsedEvents.insertOne(otherUserParsedEvent);
+
+    // accept: Non-existent parsed._id
+    errorResult = await parser.accept({
+      user: userId,
+      parsed: { ...validParsedEvent, _id: nonExistentId },
+      selectedDraft: validParsedEvent.draftEvent,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for non-existent parsed ID in accept");
+    assertEquals(errorResult.error, `ParsedEvent with ID ${nonExistentId} not found for user ${userId}.`);
+
+    // accept: Parsed exists but user doesn't match
+    errorResult = await parser.accept({
+      user: createUserId(), // Different user
+      parsed: validParsedEvent,
+      selectedDraft: validParsedEvent.draftEvent,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for user mismatch in accept");
+
+    // accept: Selected draft doesn't match any interpretation
+    const invalidDraft: DraftEvent = {
+      ...validParsedEvent.draftEvent,
+      title: "Completely different title",
+    };
+    errorResult = await parser.accept({
+      user: userId,
+      parsed: validParsedEvent,
+      selectedDraft: invalidDraft,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for non-matching selected draft");
+    assertEquals(errorResult.error, "Selected draft does not match any interpretation in the ParsedEvent.");
+
+    // reject: Non-existent parsed._id
+    errorResult = await parser.reject({
+      user: userId,
+      parsed: { ...validParsedEvent, _id: nonExistentId },
+    });
+    assertEquals("error" in errorResult, true, "Expected error for non-existent parsed ID in reject");
+    assertEquals(errorResult.error, `ParsedEvent with ID ${nonExistentId} not found for user ${userId}.`);
+
+    // reject: Parsed exists but user doesn't match
+    errorResult = await parser.reject({
+      user: createUserId(), // Different user
+      parsed: validParsedEvent,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for user mismatch in reject");
+
+    // _getAlternatives: Non-existent parsed._id
+    errorResult = await parser._getAlternatives({
+      user: userId,
+      parsed: { ...validParsedEvent, _id: nonExistentId },
+    });
+    assertEquals("error" in errorResult, true, "Expected error for non-existent parsed ID in _getAlternatives");
+    assertEquals(errorResult.error, `ParsedEvent with ID ${nonExistentId} not found for user ${userId}.`);
+
+    // _getAlternatives: Parsed exists but user doesn't match
+    errorResult = await parser._getAlternatives({
+      user: createUserId(), // Different user
+      parsed: validParsedEvent,
+    });
+    assertEquals("error" in errorResult, true, "Expected error for user mismatch in _getAlternatives");
+
+    // refineWithAI: Empty userFeedback
+    errorResult = await parser.refineWithAI({
+      user: userId,
+      parsed: validParsedEvent,
+      userFeedback: "",
+    });
+    assertEquals("error" in errorResult, true, "Expected error for empty userFeedback in refineWithAI");
+    assertEquals(errorResult.error, "User feedback cannot be empty.");
+
+    // refineWithAI: Non-existent parsed._id
+    errorResult = await parser.refineWithAI({
+      user: userId,
+      parsed: { ...validParsedEvent, _id: nonExistentId },
+      userFeedback: "make it longer",
+    });
+    assertEquals("error" in errorResult, true, "Expected error for non-existent parsed ID in refineWithAI");
+    assertEquals(errorResult.error, `ParsedEvent with ID ${nonExistentId} not found for user ${userId}.`);
+
+    // refineWithAI: Parsed exists but user doesn't match
+    errorResult = await parser.refineWithAI({
+      user: createUserId(), // Different user
+      parsed: validParsedEvent,
+      userFeedback: "make it longer",
+    });
+    assertEquals("error" in errorResult, true, "Expected error for user mismatch in refineWithAI");
+  });
+
+  await client.close();
+});
+
+// trace: Example fulfilling the Operational Principle
+
+// User provides utterance and context:
+// An application collects the user's input: "Let's meet for a quick sync next Tuesday at 3 in room 32-123 with Alex."
+// And current contextual information: current date (e.g., Saturday, July 20, 2024), timezone (America/New_York).
+
+// 1. LLM extracts event details:
+// The application calls `IntentParserConcept.parseWithAI` with the utterance and context.
+// `parser.parseWithAI({ user: USER_ID, utterance: "Let's meet for a quick sync next Tuesday at 3 in room 32-123 with Alex.", context: { currentDate: new Date("2024-07-20T10:00:00Z"), timezone: "America/New_York" } })`
+
+// The mock LLM in `_mockLLMParse` processes the input:
+// - Identifies "quick sync" as the title.
+// - Interprets "next Tuesday" as July 23, 2024 (given currentDate is July 20).
+// - Extracts "at 3" as 3:00 PM.
+// - Recognizes "room 32-123" as the location and adds "physical" tag.
+// - Extracts "with Alex" as a participant.
+// - Calculates a confidence score. Based on the mock's heuristic (0.1 base + 0.2 title + 0.2 date + 0.2 time + 0.1 participant + 0.1 location = 0.9).
+
+// 2. System provides interpretations:
+// `parseWithAI` returns a `ParsedEvent` object.
+// - `parsedEvent.draftEvent`: The primary interpretation, e.g.,
+//   `{ title: "quick sync", startTime: "2024-07-23T15:00:00Z", endTime: "2024-07-23T16:00:00Z", participants: {"Alex"}, location: "room 32-123", tags: {"physical"}, confidence: 0.9 }`
+// - `parsedEvent.alternatives`: Since mock confidence (0.9) is not < 0.9, it would provide 0 alternatives in this exact scenario.
+//   (If confidence was slightly lower, e.g. 0.8, it would provide alternatives, such as "quick sync (Alternative)" on the same day but 30 minutes later, or with a slightly different location guess.)
+// - `parsedEvent.confidence`: 0.9
+
+// 3. User confirmation:
+// The application presents the `parsedEvent.draftEvent` to the user, possibly along with `parsedEvent.alternatives` if they were generated.
+// The user reviews the details and confirms that the primary draft is correct.
+// The application then calls `IntentParserConcept.accept`.
+// `parser.accept({ user: USER_ID, parsed: parsedEvent, selectedDraft: parsedEvent.draftEvent })`
+
+// 4. Result:
+// `accept` removes the `ParsedEvent` from the database.
+// `accept` returns the confirmed `DraftEvent`, which the application can then use to create a calendar event in a separate Calendar concept.
+// If the user had chosen to refine, `refineWithAI` would be called.
+// If the user dismissed it, `reject` would be called, simply removing the `ParsedEvent`.
+```

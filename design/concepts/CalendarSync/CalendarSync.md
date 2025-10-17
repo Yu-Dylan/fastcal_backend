@@ -1,0 +1,148 @@
+<concept_spec>
+concept CalendarSync [User, Account]
+
+purpose
+    commit events to external calendar providers and maintain consistency across multiple accounts
+
+principle
+    after committing an event, it appears across all connected calendar accounts;
+    conflicts are detected by querying existing events across accounts;
+    system proposes ranked reschedule options when conflicts occur;
+    updates and cancellations propagate to all providers;
+    provider-specific event IDs are maintained for bidirectional sync
+
+operational principle
+    after user connects Google Calendar and Outlook accounts,
+    user creates a validated draft event for 2pm Tuesday;
+    detectConflicts queries both accounts and finds existing event at 2pm in Google Calendar;
+    suggestReschedules proposes alternative times (3pm, 4pm, 1pm) that avoid conflicts;
+    user selects 3pm reschedule;
+    commit creates event in both Google Calendar and Outlook with provider-specific IDs;
+    later, user updates location;
+    update propagates change to both providers using stored IDs
+
+state
+    a set of Account with
+        a user User
+        a provider Provider // "google", "outlook", "apple", "zoom"
+        credentials Map<String,Any> // OAuth tokens, refresh tokens
+        a syncStatus SyncStatus // "connected", "disconnected", "error"
+        a lastSync DateTime
+    
+    a set of SyncedEvent with
+        a user User
+        an internalId EventId // FastCal internal event ID
+        providerIds Map<Provider,String> // provider-specific event IDs
+        a syncedAt DateTime
+        accounts Set<Account> // which accounts have this event
+    
+    a set of Conflict with
+        a user User
+        a draftEvent DraftEvent
+        existingEvents Set<EventId> // conflicting events
+        a reason String // "time_overlap", "buffer_violation", "double_booking"
+    
+    where Provider = "google" | "outlook" | "apple" | "zoom"
+    where SyncStatus = "connected" | "disconnected" | "error"
+
+    invariants
+        every Account belongs to exactly one user
+        credentials are encrypted at rest
+        syncStatus reflects actual provider connection state
+        every SyncedEvent has at least one provider ID
+        providerIds keys match accounts in the synced event
+
+actions
+    connectAccount(user: User, provider: Provider, credentials: Map<String,Any>): Account
+        requires credentials are valid, provider is supported
+        effect creates account connection and validates credentials with provider
+        note returns account ID and sets syncStatus to "connected"
+        note stores encrypted credentials for future API calls
+
+    commit(user: User, event: CommittableEvent, accounts: Set<Account>): SyncedEvent
+        requires event is validated, accounts belong to user, all accounts are connected
+        effect creates event in each provider's calendar via API calls
+        note stores mapping of internal ID to provider-specific IDs
+        note returns synced event with all provider IDs
+        note sets syncedAt timestamp for tracking
+
+    detectConflicts(user: User, draft: DraftEvent): Set<Conflict>
+        requires draft exists
+        effect queries all connected accounts for events overlapping with draft time range
+        note checks both exact time overlap and buffer violations
+        note returns set of conflicts with reasons
+        note considers travel time buffers if specified in draft constraints
+
+    suggestReschedules(user: User, draft: DraftEvent, constraints: Map<String,Any>): List<Timespan>
+        requires draft exists, conflicts were detected
+        effect proposes alternative time slots that avoid conflicts
+        note ranks suggestions by: proximity to original time, attendee availability, time-of-day preferences
+        note respects constraints like working hours, day boundaries, minimum/maximum offsets
+        note returns ranked list of timespans (start, end)
+
+    update(user: User, eventId: EventId, changes: Map<String,Any>)
+        requires eventId is synced, changes contain valid field names
+        effect propagates changes to all providers using stored provider IDs
+        note handles partial failures gracefully (retries, marks account sync error)
+        note updates syncedAt timestamp
+
+    cancel(user: User, eventId: EventId)
+        requires eventId is synced
+        effect removes event from all providers using stored provider IDs
+        note removes SyncedEvent from state after successful deletion
+        note handles partial failures (marks which providers succeeded)
+
+    disconnectAccount(user: User, account: Account)
+        requires account exists, account belongs to user
+        effect revokes credentials and marks account disconnected
+        note does not delete events already committed to provider
+        note removes account from future sync operations
+
+    refreshSync(user: User, account: Account)
+        requires account exists, account is connected
+        effect refreshes OAuth tokens if needed, validates connection
+        note updates lastSync timestamp and syncStatus
+        note can detect provider-side changes for bidirectional sync
+
+    getAccountStatus(user: User): Set<Account>
+        effect returns all accounts for user with sync status and last sync time
+
+    getSyncedEvent(eventId: EventId): SyncedEvent?
+        effect returns synced event with provider IDs, or none if not synced
+
+notes
+    Provider integration challenges:
+    - Each provider has different API schemas and rate limits
+    - OAuth token refresh must happen transparently
+    - Timezone handling varies by provider (some use IANA, others use Windows zones)
+    - Virtual meeting links (Zoom, Teams) require separate API integration
+    
+    Conflict detection strategies:
+    - Time overlap: events with intersecting time ranges
+    - Buffer violation: event starts/ends within required buffer of another event
+    - Double booking: multiple events at exact same time
+    - All-day events: special handling for day-long events
+    
+    Reschedule ranking heuristics:
+    - Proximity: prefer times close to original (within same day > next day > next week)
+    - Time-of-day: prefer similar time of day (morning event → morning slots)
+    - Attendee availability: check if attendees are free (requires access to their calendars)
+    - User preferences: respect working hours, avoid early mornings or late nights
+    
+    Error handling:
+    - Provider API failures trigger retry logic with exponential backoff
+    - Partial sync failures mark specific accounts as "error" status
+    - User notifications for sync failures
+    - Event remains in FastCal even if provider sync fails
+    
+    Security considerations:
+    - Credentials encrypted using AES-256
+    - OAuth tokens rotated regularly
+    - Scope limitations: only calendar read/write, not full account access
+    - User can revoke access at any time
+    
+    Bidirectional sync (future enhancement):
+    - Detect events created directly in provider calendars
+    - Sync provider-side changes back to FastCal
+    - Conflict resolution when same event modified in multiple places
+</concept_spec>
