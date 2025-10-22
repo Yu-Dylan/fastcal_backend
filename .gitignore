@@ -5,3 +5,5 @@ ctx
 node_modules/
 
 ctx.exe
+ctx.exe
+.obsidian/workspace.json

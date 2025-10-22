@@ -63,6 +63,7 @@ Obsidian is an open-source Markdown editor and personal knowledge management sol
 This should be correctly set already, but under Obsidian -> Settings -> Files and links, make sure that:
 1. `New link format` is set to `Relative path to file`
 2. `Use [[Wikilinks]]` is disabled
+3. `Detect all file extensions` is enabled (so you can easily view code and drop links to code files)
 
 ![](media/obsidian_settings.png)
 

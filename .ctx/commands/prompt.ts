@@ -54,11 +54,15 @@ export async function promptLLM(doc: string, file: string) {
   let meta = {};
   if (last !== undefined) {
     const data = last.usageMetadata;
+    const promptTokens = data?.promptTokenCount || "";
+    const outputTokens = data?.candidatesTokenCount || "";
+    const totalTokens = data?.totalTokenCount || "";
+    const thoughtTokens = data?.thoughtsTokenCount || "";
     meta = {
-      promptTokens: data?.promptTokenCount,
-      outputTokens: data?.candidatesTokenCount,
-      totalTokens: data?.totalTokenCount,
-      thoughtTokens: data?.thoughtsTokenCount,
+      promptTokens,
+      outputTokens,
+      totalTokens,
+      thoughtTokens,
     };
   }
   const properties = {

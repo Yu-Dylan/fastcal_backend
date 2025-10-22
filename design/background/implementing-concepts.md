@@ -12,7 +12,8 @@ For our specific implementation, we will use MongoDB as the database. Each piece
 - **principle**: the principle helps establish a canonical test and models out desirable behavior
 - **state**: the state relations can be mapped directly to the MongoDB collections
 - **actions**: each action is a method of the same name, and takes in a dictionary with the keys described by the action parameters in the specification with the specified types
-- **queries**: potential queries are also methods, but must begin with an underscore `_`, and instead return an array of the type specified by their return 
+- **queries**: potential queries are also methods, but must begin with an underscore `_`
+	- **Important:** queries MUST return an **array** of the type specified by the return signature
 
 ## Technology stack details
 
@@ -117,14 +118,35 @@ export default class LabelingConcept {
     this.items = this.db.collection(PREFIX + "items");
     this.labels = this.db.collection(PREFIX + "labels");
   }
+  /**
+   * createLabel (name: String)
+   *
+   * **requires** ...
+   *
+   * **effects** ...
+   */
   createLabel({ name }: { name: string }): Empty {
     // todo: create label
     return {};
   }
+  /**
+   * addLabel (item: Item, label: Label)
+   *
+   * **requires** ...
+   *
+   * **effects** ...
+   */
   addLabel({ item, label }: { item: Item; label: Label }): Empty {
     // todo: add label
     return {};
   }
+  /**
+   * deleteLabel (item: Item, label: Label)
+   *
+   * **requires** ...
+   *
+   * **effects** ...
+   */
   deleteLabel({ item, label }: { item: Item; label: Label }): Empty {
     // todo: delete label
     return {};
@@ -133,6 +155,55 @@ export default class LabelingConcept {
 ```
 
 Note that even for actions that don't want to return anything, you should return an empty record `{}`. To denote the type of this properly, you can use the provided `Empty` type from `@utils/types.ts` which simply specifies the type as `Record<PropertyKey, never>`.
+
+# Dictionaries as arguments and results
+
+Note that the arguments and results of actions are always dictionaries. For example if an action in a specification has the signature
+
+```
+action (a: A, b: B): (c: C)
+```
+
+this means that the implementation should take a dictionary with fields named `a` and `b`, and return a dictionary with a field `c`. Error results are returned as a dictionary with a field `error` which is generally a string:
+
+```
+action (a: A, b: B): (error: string)
+```
+
+Queries always return an array of dictionaries so if the specification has this signature:
+
+```
+\_query (a: A, b: B): (c: C)
+\_query (a: A, b: B): (error: string)
+```
+
+the implementation should return an array of dictionaries each with a field called `c` or, in the error case, a dictionary with a field `error` of type string. Note also that a query, unlike an action, can return a nested dictionary. For example, given this state
+
+```
+	a set of Groups with
+	  a users set of User
+
+	a set of Users with
+	  a username String
+	  a password String
+```
+
+the query specification
+
+```
+	\_getUsersWithUsernamesAndPasswords (group: Group) : (user: {username: String, password: String})
+    **requires** group exists
+    **effects** returns set of all users in the group each with its username and password
+```
+
+says that the query should return an array of dictionaries, each with a `user` field that holds a dictionary with a `username` and `password` field.
+
+# Imports
+
+The following `deno.json` file lists additional imports that are available to help ease imports. In particular, the utility folder and the concept folder are available as the `@utils` and `@concepts` prefixes.
+
+[@deno.json](/deno.json)
+
 # Initialization
 
 We provide a helper database script in `@utils` that reads the environment variables in your `.env` file and initializes a MongoDB database. For normal app development, use:
@@ -156,3 +227,15 @@ Every concept should have inline documentation and commenting:
 - Any testing should be guided by the principle.
 - Each action should state the requirements and effects, and tests should check that both work against variations.
 
+# Commenting
+
+Every action should have a comment including its signature, its requirements, and effects:
+```typescript
+  /**
+   * createLabel (name: String): (label: Label)
+   *
+   * **requires** no Label with the given `name` already exists
+   *
+   * **effects** creates a new Label `l`; sets the name of `l` to `name`; returns `l` as `label`
+   */
+```

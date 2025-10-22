@@ -6,7 +6,7 @@ Testing concepts involves primarily:
     - **effects** is satisfied: after the action is performed, we can verify that the state did indeed change according to the effect (or the return is correctly specified).
 2. Ensuring that the **principle** is fully modeled by the actions:
     - Demonstrate that the series of actions described in the **principle**, when performed, result in the specified behavior or updates to state.
-
+    
 # approach: steps to testing
 
 The following prefix format for header 1 blocks denote the relevant steps:
@@ -42,3 +42,8 @@ Use the Deno.test framework, splitting by appropriate test steps and describing 
 import { assertEquals } from "jsr:@std/assert"; // or any other utility from the library
 ```
 
+# Legible testing
+
+ - Each test should output what it is doing and the trace of any actions, to help with debugging and increasing confidence that the concept or action is doing what it says.
+ - Principle tests and tests involving multiple actions should explain how it aligns with expectations.
+ - For action tests, the output should explain how requirements are met and how effects are confirmed.
