@@ -904,4 +904,151 @@ export default class CalendarSyncConcept {
       return { error: `Failed to retrieve synced event: ${e.message}` };
     }
   }
+
+  /**
+   * Get Google OAuth URL for user to authorize
+   */
+  async getGoogleAuthUrl(params: { user: User }): Promise<{ url: string } | { error: string }> {
+    try {
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const url = GoogleCalendarAPI.getAuthUrl(params.user);
+      return { url };
+    } catch (e: any) {
+      return { error: `Failed to get auth URL: ${e.message}` };
+    }
+  }
+
+  /**
+   * Handle OAuth callback and store tokens
+   */
+  async handleGoogleCallback(params: { user: User; code: string }): Promise<{ success: boolean } | { error: string }> {
+    try {
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const tokens = await GoogleCalendarAPI.exchangeCodeForTokens(params.code);
+      
+      // Check if account already exists
+      const existingAccount = await this.accounts.findOne({ user: params.user, provider: "google" });
+      
+      if (existingAccount) {
+        // Update existing account with new tokens
+        await this.accounts.updateOne(
+          { _id: existingAccount._id },
+          {
+            $set: {
+              credentials: {
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token,
+                expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
+              },
+              syncStatus: "connected",
+              lastSync: new Date(),
+            }
+          }
+        );
+      } else {
+        // Create new account
+        const accountId = freshID();
+        await this.accounts.insertOne({
+          _id: accountId,
+          user: params.user,
+          provider: "google",
+          credentials: {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
+          },
+          syncStatus: "connected",
+          lastSync: new Date(),
+        });
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { error: `Failed to handle callback: ${e.message}` };
+    }
+  }
+
+  /**
+   * Get Google Calendar events for a user
+   */
+  async getGoogleEvents(params: { user: User }): Promise<{ events: any[] } | { error: string }> {
+    try {
+      // Get user's Google account
+      const account = await this.accounts.findOne({ user: params.user, provider: "google", syncStatus: "connected" });
+      if (!account) {
+        return { error: "No connected Google Calendar account" };
+      }
+
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const api = new GoogleCalendarAPI(account.credentials.accessToken);
+
+      // Get events from now to 30 days from now
+      const now = new Date();
+      const future = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      
+      const events = await api.listEvents(now, future);
+      
+      return { events };
+    } catch (e: any) {
+      return { error: `Failed to get Google events: ${e.message}` };
+    }
+  }
+
+  /**
+   * Delete a Google Calendar event
+   */
+  async deleteGoogleEvent(params: { user: User; eventId: string }): Promise<{ success: boolean } | { error: string }> {
+    try {
+      // Get user's Google account
+      const account = await this.accounts.findOne({ user: params.user, provider: "google", syncStatus: "connected" });
+      if (!account) {
+        return { error: "No connected Google Calendar account" };
+      }
+
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const api = new GoogleCalendarAPI(account.credentials.accessToken);
+
+      await api.deleteEvent(params.eventId);
+      
+      return { success: true };
+    } catch (e: any) {
+      return { error: `Failed to delete from Google: ${e.message}` };
+    }
+  }
+
+  /**
+   * Sync a draft event to Google Calendar
+   */
+  async syncToGoogle(params: { user: User; draftId: ID; draftData: any }): Promise<{ googleEventId: string } | { error: string }> {
+    try {
+      // Get user's Google account
+      const account = await this.accounts.findOne({ user: params.user, provider: "google", syncStatus: "connected" });
+      if (!account) {
+        return { error: "No connected Google Calendar account" };
+      }
+
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const api = new GoogleCalendarAPI(account.credentials.accessToken);
+
+      // Create event in Google Calendar
+      const googleEvent = await api.createEvent({
+        summary: params.draftData.title,
+        description: params.draftData.description || "",
+        location: params.draftData.location || "",
+        start: {
+          dateTime: new Date(params.draftData.startTime).toISOString(),
+          timeZone: "America/New_York",
+        },
+        end: {
+          dateTime: new Date(params.draftData.endTime).toISOString(),
+          timeZone: "America/New_York",
+        },
+        attendees: params.draftData.attendees?.map((email: string) => ({ email })) || [],
+      });
+
+      return { googleEventId: googleEvent.id! };
+    } catch (e: any) {
+      return { error: `Failed to sync to Google: ${e.message}` };
+    }
+  }
 }

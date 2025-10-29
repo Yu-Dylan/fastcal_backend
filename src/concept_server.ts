@@ -33,6 +33,12 @@ async function main() {
   }));
 
   app.get("/", (c) => c.text("Concept Server is running."));
+  
+  // OAuth callback route - serves HTML page that handles the callback
+  app.get("/api/CalendarSync/oauth/callback", async (c) => {
+    const html = await Deno.readTextFile("./src/concepts/CalendarSync/oauth_callback.html");
+    return c.html(html);
+  });
 
   // --- Dynamic Concept Loading and Routing ---
   console.log(`Scanning for concepts in ./${CONCEPTS_DIR}...`);

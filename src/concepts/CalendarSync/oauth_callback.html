@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connecting...</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: #1a1a1a;
+            color: white;
+        }
+        .loader {
+            border: 4px solid #333;
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loader"></div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state'); // This is the user ID
+        
+        if (code && state) {
+            fetch('http://localhost:8000/api/CalendarSync/handleGoogleCallback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user: state, code: code })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // Redirect with success param
+                    window.location.href = 'http://localhost:5173?auth=success';
+                } else {
+                    document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: ' + (data.error || 'Unknown error') + '</div>';
+                }
+            })
+            .catch(err => {
+                document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: ' + err.message + '</div>';
+            });
+        } else {
+            document.getElementById('status').textContent = 'Error: Missing authorization code';
+        }
+    </script>
+</body>
+</html>

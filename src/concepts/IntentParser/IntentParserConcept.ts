@@ -1,6 +1,7 @@
 import { Collection, Db } from "npm:mongodb";
 import { ID, Empty } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
+import { parseWithGemini } from "./gemini_parser.ts";
 
 // Declare collection prefix, use concept name
 const PREFIX = "IntentParser" + ".";
@@ -56,6 +57,7 @@ export interface DraftEvent {
   location: string;
   tags: Set<Tag>;
   confidence: number;
+  message?: string; // For query intent responses
 }
 
 /**
@@ -98,189 +100,6 @@ export default class IntentParserConcept {
   }
 
   /**
-   * Helper function for mock LLM parsing.
-   * This function simulates an LLM's capability to extract event details from natural language.
-   * It uses simple rule-based matching for common patterns.
-   *
-   * @param utterance The natural language input.
-   * @param context Contextual information (currentDate, timezone).
-   * @param existingDraft An optional DraftEvent to refine (for `refineWithAI`).
-   * @returns An object containing `draftEvent`, `alternatives`, and `confidence` (for the overall parsing).
-   */
-  private _mockLLMParse(
-    utterance: string,
-    context: Record<string, any>,
-    existingDraft?: DraftEvent,
-  ): { draftEvent: DraftEvent; alternatives: DraftEvent[]; confidence: number } {
-    const currentDate = context.currentDate
-      ? new Date(context.currentDate)
-      : new Date();
-    const timezone = context.timezone || "America/New_York"; // Default timezone
-
-    let title: string = existingDraft?.title || "Meeting";
-    let startTime: Date = existingDraft?.startTime || new Date(currentDate);
-    let endTime: Date = existingDraft?.endTime || new Date(startTime.getTime() + 60 * 60 * 1000); // Default 1 hour
-    let participants: Set<Person> = existingDraft?.participants || new Set();
-    let location: string = existingDraft?.location || "";
-    let tags: Set<Tag> = existingDraft?.tags || new Set();
-    let draftConfidence: number = existingDraft?.confidence || 0.1; // Confidence for the draft itself
-
-    let overallConfidence = 0.1; // Base confidence
-
-    const lowerUtterance = utterance.toLowerCase();
-
-    // -- Title Extraction --
-    const titleMatch = lowerUtterance.match(/(?:meeting|call|sync|lunch|dinner|coffee|chat|event|appointment)\s*(?:with|about|for)?\s*([\w\s'-]+)?/i);
-    if (titleMatch && titleMatch[0].length > 5) { // Ensure it's not just a keyword
-      title = utterance.substring(0, Math.min(utterance.length, 50)); // Take first part of utterance as title
-      overallConfidence += 0.2;
-    } else {
-      title = existingDraft?.title || "Event";
-    }
-
-    // -- Date & Time Extraction --
-    let tempStartTime = new Date(startTime); // Start from existing or current date
-    let tempEndTime = new Date(endTime);
-
-    const today = new Date(currentDate);
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
-    const nextWeek = new Date(today);
-    nextWeek.setDate(today.getDate() + 7);
-
-    // Relative dates
-    if (lowerUtterance.includes("tomorrow")) {
-      tempStartTime.setDate(tomorrow.getDate());
-      tempStartTime.setMonth(tomorrow.getMonth());
-      tempStartTime.setFullYear(tomorrow.getFullYear());
-      overallConfidence += 0.2;
-    } else if (lowerUtterance.includes("next tuesday")) {
-      let day = new Date(currentDate);
-      while (day.getDay() !== 2) { // 2 for Tuesday
-        day.setDate(day.getDate() + 1);
-      }
-      tempStartTime.setDate(day.getDate());
-      tempStartTime.setMonth(day.getMonth());
-      tempStartTime.setFullYear(day.getFullYear());
-      overallConfidence += 0.2;
-    }
-
-    // Time extraction (e.g., "at 3pm", "15:00")
-    const timeMatch = lowerUtterance.match(/at\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)|(\d{1,2}:\d{2})/i);
-    if (timeMatch) {
-      let timeStr = timeMatch[1] || timeMatch[2];
-      let hours = 0;
-      let minutes = 0;
-
-      const hourMatch = timeStr.match(/(\d{1,2})/);
-      if (hourMatch) hours = parseInt(hourMatch[1], 10);
-
-      const minuteMatch = timeStr.match(/:(\d{2})/);
-      if (minuteMatch) minutes = parseInt(minuteMatch[1], 10);
-
-      if (timeStr.toLowerCase().includes("pm") && hours < 12) hours += 12;
-      if (timeStr.toLowerCase().includes("am") && hours === 12) hours = 0; // Midnight 12 AM
-
-      tempStartTime.setHours(hours, minutes, 0, 0);
-      overallConfidence += 0.2;
-      // Default duration is 1 hour
-      tempEndTime = new Date(tempStartTime.getTime() + 60 * 60 * 1000);
-    } else {
-      // If no explicit time, try to infer default times for events like "lunch"
-      if (lowerUtterance.includes("lunch")) {
-        tempStartTime.setHours(12, 0, 0, 0);
-        tempEndTime = new Date(tempStartTime.getTime() + 60 * 60 * 1000); // 1 hour
-        overallConfidence += 0.1;
-      }
-    }
-
-    // Refinement for duration, e.g., "30 minutes longer"
-    const durationRefineMatch = utterance.match(/(\d+)\s*minutes?\s*(longer|shorter)/i);
-    if (durationRefineMatch && existingDraft) {
-      const durationChange = parseInt(durationRefineMatch[1], 10) * 60 * 1000; // milliseconds
-      if (durationRefineMatch[2] === "longer") {
-        tempEndTime = new Date(existingDraft.endTime.getTime() + durationChange);
-      } else {
-        tempEndTime = new Date(existingDraft.endTime.getTime() - durationChange);
-      }
-      overallConfidence += 0.1;
-    }
-
-
-    // Ensure end time is after start time
-    if (tempEndTime <= tempStartTime) {
-      tempEndTime = new Date(tempStartTime.getTime() + 60 * 60 * 1000); // default to 1 hour
-    }
-    startTime = tempStartTime;
-    endTime = tempEndTime;
-
-    // -- Participant Extraction --
-    const participantMatch = utterance.match(/(?:with|and)\s+([A-Z][a-z]+(?:(?:\s+and|\s*,\s*)[A-Z][a-z]+)*)/i);
-    if (participantMatch && participantMatch[1]) {
-      const names = participantMatch[1].split(/\s+(?:and|,)\s+/).map(name => name.trim());
-      names.forEach(name => participants.add(name));
-      overallConfidence += 0.1 * names.length;
-    }
-
-    // -- Location Extraction --
-    const locationMatch = utterance.match(/(?:in|at)\s+([\w\d\s.-]+(?:room|building|zoom|meet|office|cafe|restaurant|library|[A-Z]))/i);
-    if (locationMatch && locationMatch[1]) {
-      location = locationMatch[1].trim();
-      if (location.toLowerCase().includes("zoom") || location.toLowerCase().includes("meet")) {
-        tags.add("virtual");
-      } else {
-        tags.add("physical");
-      }
-      overallConfidence += 0.1;
-    }
-
-    // Clamp overall confidence between 0.0 and 1.0
-    overallConfidence = Math.max(0.0, Math.min(1.0, overallConfidence));
-    draftConfidence = overallConfidence; // For mock, draft confidence equals overall confidence
-
-    const draft: DraftEvent = {
-      title: title || "Event",
-      startTime,
-      endTime,
-      participants,
-      location,
-      tags,
-      confidence: draftConfidence,
-    };
-
-    // For mock, generate a simple alternative if confidence is not perfect
-    const alternatives: DraftEvent[] = [];
-    if (overallConfidence < 0.9 && !existingDraft) {
-      const alternativeStartTime = new Date(startTime.getTime() + 30 * 60 * 1000); // 30 min later
-      const alternativeEndTime = new Date(alternativeStartTime.getTime() + (endTime.getTime() - startTime.getTime()));
-      alternatives.push({
-        ...draft,
-        title: `${draft.title} (Alternative)`,
-        startTime: alternativeStartTime,
-        endTime: alternativeEndTime,
-        confidence: Math.max(0.1, draftConfidence - 0.1),
-      });
-
-      const alternativeLocation = draft.location ? `${draft.location} (nearby)` : "Unspecified location";
-      alternatives.push({
-        ...draft,
-        location: alternativeLocation,
-        confidence: Math.max(0.1, draftConfidence - 0.2),
-      });
-      // Sort alternatives by confidence
-      alternatives.sort((a, b) => b.confidence - a.confidence);
-    }
-
-
-    return {
-      draftEvent: draft,
-      alternatives,
-      confidence: overallConfidence,
-    };
-  }
-
-  /**
    * @action parseWithAI
    * @purpose uses an AI (mock LLM) to analyze a natural language utterance
    * and extract structured calendar event data.
@@ -312,32 +131,46 @@ export default class IntentParserConcept {
     }
 
     try {
-      // --- MOCK LLM INTEGRATION POINT ---
-      // In a real implementation, this would involve an API call to an LLM.
-      // For now, we use a rule-based mock.
-      const { draftEvent, alternatives, confidence } = this._mockLLMParse(
-        utterance,
-        context,
-      );
-      // --- END MOCK INTEGRATION ---
+      // Use Gemini to parse the utterance
+      const geminiResult = await parseWithGemini(utterance, {
+        currentDate: context.currentDate ? new Date(context.currentDate) : new Date(),
+        timezone: context.timezone || "America/New_York",
+        existingEvents: context.existingEvents || []
+      });
+
+      // Convert Gemini result to DraftEvent format
+      const draftEvent: DraftEvent = {
+        title: geminiResult.title,
+        startTime: geminiResult.startTime,
+        endTime: geminiResult.endTime,
+        participants: new Set(geminiResult.participants),
+        location: geminiResult.location,
+        tags: new Set(geminiResult.tags),
+        confidence: geminiResult.confidence,
+        message: geminiResult.message, // Add message field for query intent
+      };
 
       const newParsedEvent: ParsedEvent = {
         _id: freshID(),
         user,
         utterance,
         draftEvent,
-        alternatives,
-        confidence,
-        context,
+        alternatives: [], // Gemini doesn't provide alternatives yet
+        confidence: geminiResult.confidence,
+        context: {
+          ...context,
+          intent: geminiResult.intent,
+          eventId: geminiResult.eventId,
+          searchResults: geminiResult.searchResults, // Add search results
+          timeFrame: geminiResult.timeFrame, // Add time frame
+        },
         parsingMethod: "AI",
       };
 
       await this.parsedEvents.insertOne(newParsedEvent);
       return newParsedEvent;
     } catch (e: any) {
-      console.error("Error during AI parsing:", e);
-      // For now, if mock LLM fails (e.g., due to unexpected input), return an error.
-      // The spec note mentions throwing an error, but for normal errors, we return a record.
+      console.error("Error during Gemini parsing:", e);
       return { error: `AI parsing failed: ${e.message}` };
     }
   }
