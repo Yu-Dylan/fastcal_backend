@@ -200,6 +200,21 @@ export function startRequestingServer(
   );
 
   /**
+   * CUSTOM ROUTES
+   * 
+   * OAuth callback routes for Google authentication
+   */
+  app.get(`${REQUESTING_BASE_URL}/CalendarSync/oauth/callback`, async (c) => {
+    const html = await Deno.readTextFile("./src/concepts/CalendarSync/oauth_callback.html");
+    return c.html(html);
+  });
+
+  app.get(`${REQUESTING_BASE_URL}/CalendarSync/oauth/login`, async (c) => {
+    const html = await Deno.readTextFile("./src/concepts/CalendarSync/login_callback.html");
+    return c.html(html);
+  });
+
+  /**
    * PASSTHROUGH ROUTES
    *
    * These routes register against every concept action and query.

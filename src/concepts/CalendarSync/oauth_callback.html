@@ -29,12 +29,81 @@
 </head>
 <body>
     <div class="loader"></div>
+    <div id="status" style="text-align: center; margin-top: 20px; color: #ccc;"></div>
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
-        const state = urlParams.get('state'); // This is the user ID
-        
-        if (code && state) {
+        async function handleCallback() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const state = urlParams.get('state');
+            
+            const statusEl = document.getElementById('status');
+            
+            if (!code) {
+                document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: Missing authorization code</div>';
+                return;
+            }
+
+            console.log('OAuth callback - state:', state, 'code:', code);
+
+        // Check if this is a login flow or calendar connection
+        if (state === 'login') {
+            // Handle login flow
+            statusEl.textContent = 'Getting user info...';
+            console.log('Step 1: Calling handleGoogleLogin');
+            
+            fetch('http://localhost:8000/api/CalendarSync/handleGoogleLogin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code })
+            })
+            .then(res => {
+                console.log('handleGoogleLogin response status:', res.status);
+                return res.json();
+            })
+            .then(data => {
+                console.log('handleGoogleLogin data:', data);
+                if (data.email && data.name) {
+                    statusEl.textContent = 'Creating session...';
+                    console.log('Step 2: Creating session for user:', data.userId);
+                    
+                    // Create session
+                    return fetch('http://localhost:8000/api/Session/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            user: data.userId,
+                            email: data.email,
+                            name: data.name
+                        })
+                    });
+                } else {
+                    throw new Error(data.error || 'Failed to get user info');
+                }
+            })
+            .then(res => {
+                console.log('Session create response status:', res.status);
+                return res.json();
+            })
+            .then(sessionData => {
+                console.log('Session data:', sessionData);
+                if (sessionData.token) {
+                    statusEl.textContent = 'Redirecting...';
+                    console.log('Step 3: Session created, redirecting with token');
+                    
+                    // Redirect to app with token in URL (will be stored by frontend)
+                    setTimeout(() => {
+                        window.location.href = 'http://localhost:5173?token=' + sessionData.token;
+                    }, 500);
+                } else {
+                    throw new Error(sessionData.error || 'Failed to create session');
+                }
+            })
+            .catch(err => {
+                console.error('Login error:', err);
+                document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Login Error: ' + err.message + '<br><br>Check browser console for details</div>';
+            });
+        } else if (state) {
+            // Handle calendar connection flow (state is user ID)
             fetch('http://localhost:8000/api/CalendarSync/handleGoogleCallback', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -43,8 +112,8 @@
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
-                    // Redirect with success param
-                    window.location.href = 'http://localhost:5173?auth=success';
+                    // Redirect back to app
+                    window.location.href = 'http://localhost:5173';
                 } else {
                     document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: ' + (data.error || 'Unknown error') + '</div>';
                 }
@@ -53,8 +122,12 @@
                 document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: ' + err.message + '</div>';
             });
         } else {
-            document.getElementById('status').textContent = 'Error: Missing authorization code';
+            document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: Invalid state parameter</div>';
         }
+        }
+        
+        // Call the function
+        handleCallback();
     </script>
 </body>
 </html>

@@ -28,11 +28,19 @@ export class GoogleCalendarAPI {
   }
 
   static getAuthUrl(state?: string): string {
+    // Use the same redirect URI for both flows
+    // The state parameter will tell us if it's login or calendar connection
+    const scopes = [
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ];
+    
     const params = new URLSearchParams({
       client_id: GOOGLE_CLIENT_ID!,
       redirect_uri: GOOGLE_REDIRECT_URI,
       response_type: "code",
-      scope: "https://www.googleapis.com/auth/calendar",
+      scope: scopes.join(" "),
       access_type: "offline",
       prompt: "consent",
       ...(state && { state }),
@@ -88,6 +96,27 @@ export class GoogleCalendarAPI {
     if (!response.ok) {
       const error = await response.text();
       throw new Error(`Failed to refresh token: ${error}`);
+    }
+
+    return await response.json();
+  }
+
+  static async getUserInfo(accessToken: string): Promise<{
+    id: string;
+    email: string;
+    name: string;
+    picture?: string;
+  }> {
+    // Use the userinfo endpoint that works with calendar scope
+    const response = await fetch("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to get user info: ${error}`);
     }
 
     return await response.json();

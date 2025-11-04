@@ -906,7 +906,42 @@ export default class CalendarSyncConcept {
   }
 
   /**
-   * Get Google OAuth URL for user to authorize
+   * Get Google OAuth URL for LOGIN (authentication only, no calendar access yet)
+   */
+  async getGoogleLoginUrl(): Promise<{ url: string } | { error: string }> {
+    try {
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      // Use a special state to indicate this is for login
+      const url = GoogleCalendarAPI.getAuthUrl("login");
+      return { url };
+    } catch (e: any) {
+      return { error: `Failed to get login URL: ${e.message}` };
+    }
+  }
+
+  /**
+   * Handle Google OAuth callback for LOGIN and return user info
+   */
+  async handleGoogleLogin(params: { code: string }): Promise<{ email: string; name: string; userId: string } | { error: string }> {
+    try {
+      const { GoogleCalendarAPI } = await import("./google_calendar.ts");
+      const tokens = await GoogleCalendarAPI.exchangeCodeForTokens(params.code);
+      
+      // Get user info from Google
+      const userInfo = await GoogleCalendarAPI.getUserInfo(tokens.access_token);
+      
+      return {
+        email: userInfo.email,
+        name: userInfo.name,
+        userId: userInfo.id, // Google user ID
+      };
+    } catch (e: any) {
+      return { error: `Failed to handle login: ${e.message}` };
+    }
+  }
+
+  /**
+   * Get Google OAuth URL for user to authorize CALENDAR ACCESS
    */
   async getGoogleAuthUrl(params: { user: User }): Promise<{ url: string } | { error: string }> {
     try {
