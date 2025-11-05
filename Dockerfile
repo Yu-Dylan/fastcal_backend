@@ -15,6 +15,9 @@ EXPOSE 10000
 # This grants the necessary write permissions for the build step.
 COPY --chown=deno:deno . .
 
+# Install dependencies (including npm packages like mongodb)
+RUN deno install
+
 # Run the custom build step defined in deno.json.
 # This step writes to src/concepts/concepts.ts and now has permission to do so.
 RUN deno task build
