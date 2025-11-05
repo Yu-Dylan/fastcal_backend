@@ -93,17 +93,9 @@ export class GoogleCalendarAPI {
     return await response.json();
   }
 
-  async listEvents(timeMin?: Date, timeMax?: Date): Promise<GoogleCalendarEvent[]> {
-    const params = new URLSearchParams({
-      maxResults: "100",
-      singleEvents: "true",
-      orderBy: "startTime",
-      ...(timeMin && { timeMin: timeMin.toISOString() }),
-      ...(timeMax && { timeMax: timeMax.toISOString() }),
-    });
-
+  async listCalendars(): Promise<Array<{ id: string; summary: string; primary?: boolean }>> {
     const response = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
+      "https://www.googleapis.com/calendar/v3/users/me/calendarList",
       {
         headers: {
           Authorization: `Bearer ${this.accessToken}`,
@@ -113,11 +105,71 @@ export class GoogleCalendarAPI {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Failed to list events: ${error}`);
+      throw new Error(`Failed to list calendars: ${error}`);
     }
 
     const data = await response.json();
     return data.items || [];
+  }
+
+  async listEvents(timeMin?: Date, timeMax?: Date): Promise<GoogleCalendarEvent[]> {
+    // First, get all calendars the user has access to
+    const calendars = await this.listCalendars();
+    
+    // Fetch events from all calendars in parallel
+    const allEventsPromises = calendars.map(async (calendar) => {
+      const params = new URLSearchParams({
+        maxResults: "100",
+        singleEvents: "true",
+        orderBy: "startTime",
+        ...(timeMin && { timeMin: timeMin.toISOString() }),
+        ...(timeMax && { timeMax: timeMax.toISOString() }),
+      });
+
+      try {
+        const response = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?${params}`,
+          {
+            headers: {
+              Authorization: `Bearer ${this.accessToken}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          console.warn(`Failed to fetch events from calendar ${calendar.summary}: ${response.statusText}`);
+          return [];
+        }
+
+        const data = await response.json();
+        const events = data.items || [];
+        
+        // Add calendar info to each event for reference
+        return events.map((event: any) => ({
+          ...event,
+          calendarId: calendar.id,
+          calendarName: calendar.summary,
+        }));
+      } catch (error) {
+        console.warn(`Error fetching events from calendar ${calendar.summary}:`, error);
+        return [];
+      }
+    });
+
+    // Wait for all calendar event fetches to complete
+    const allEventsArrays = await Promise.all(allEventsPromises);
+    
+    // Flatten the array of arrays into a single array
+    const allEvents = allEventsArrays.flat();
+    
+    // Sort by start time
+    allEvents.sort((a, b) => {
+      const aStart = a.start?.dateTime || a.start?.date;
+      const bStart = b.start?.dateTime || b.start?.date;
+      return new Date(aStart).getTime() - new Date(bStart).getTime();
+    });
+    
+    return allEvents;
   }
 
   async createEvent(event: GoogleCalendarEvent): Promise<GoogleCalendarEvent> {
