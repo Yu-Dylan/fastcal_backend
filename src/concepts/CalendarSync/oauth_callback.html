@@ -38,12 +38,20 @@
             
             const statusEl = document.getElementById('status');
             
+            // Detect environment
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const BACKEND_URL = isLocal ? 'http://localhost:8000' : 'https://fastcal-backend.onrender.com';
+            const FRONTEND_URL = isLocal ? 'http://localhost:5173' : 'https://fastcal.onrender.com';
+            
             if (!code) {
                 document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: Missing authorization code</div>';
                 return;
             }
 
             console.log('OAuth callback - state:', state, 'code:', code);
+            console.log('Environment:', isLocal ? 'local' : 'production');
+            console.log('Backend URL:', BACKEND_URL);
+            console.log('Frontend URL:', FRONTEND_URL);
 
         // Check if this is a login flow or calendar connection
         if (state === 'login') {
@@ -51,7 +59,7 @@
             statusEl.textContent = 'Getting user info...';
             console.log('Step 1: Calling handleGoogleLogin');
             
-            fetch('http://localhost:8000/api/CalendarSync/handleGoogleLogin', {
+            fetch(`${BACKEND_URL}/api/CalendarSync/handleGoogleLogin`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code: code })
@@ -67,7 +75,7 @@
                     console.log('Step 2: Creating session for user:', data.userId);
                     
                     // Create session
-                    return fetch('http://localhost:8000/api/Session/create', {
+                    return fetch(`${BACKEND_URL}/api/Session/create`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -92,7 +100,7 @@
                     
                     // Redirect to app with token in URL (will be stored by frontend)
                     setTimeout(() => {
-                        window.location.href = 'http://localhost:5173?token=' + sessionData.token;
+                        window.location.href = `${FRONTEND_URL}?token=${sessionData.token}`;
                     }, 500);
                 } else {
                     throw new Error(sessionData.error || 'Failed to create session');
@@ -104,7 +112,7 @@
             });
         } else if (state) {
             // Handle calendar connection flow (state is user ID)
-            fetch('http://localhost:8000/api/CalendarSync/handleGoogleCallback', {
+            fetch(`${BACKEND_URL}/api/CalendarSync/handleGoogleCallback`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ user: state, code: code })
@@ -113,7 +121,7 @@
             .then(data => {
                 if (data.success) {
                     // Redirect back to app
-                    window.location.href = 'http://localhost:5173';
+                    window.location.href = FRONTEND_URL;
                 } else {
                     document.body.innerHTML = '<div style="color: red; text-align: center; padding: 2rem;">Error: ' + (data.error || 'Unknown error') + '</div>';
                 }
