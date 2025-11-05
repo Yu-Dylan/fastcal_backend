@@ -45,6 +45,7 @@ export const inclusions: Record<string, string> = {
   "/api/CalendarSync/connectAccount": "allow direct account connection",
   "/api/CalendarSync/disconnectAccount": "allow direct account disconnection",
   "/api/CalendarSync/refreshSync": "allow manual sync refresh",
+  "/api/CalendarSync/syncToGoogle": "external API call needs fast passthrough to avoid timeout",
   
   // Session - Authentication
   "/api/Session/getSession": "public query to get session info",
@@ -105,7 +106,6 @@ export const exclusions: Array<string> = [
   "/api/EventDrafts/create", // Auto-validate after creation
   
   // CalendarSync - Actions requiring syncs
-  "/api/CalendarSync/syncToGoogle", // Check validation before syncing
   "/api/CalendarSync/deleteGoogleEvent", // Check authorization
   "/api/CalendarSync/getGoogleEvents", // Check account connection
   
